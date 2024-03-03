@@ -6,11 +6,18 @@ use std::{collections::HashMap, hash::Hash};
 use std::iter::{zip};
 fn main() {
    //time
+   let t0 = std::time::Instant::now();
    let mut agents: Vec<Agent> = Vec::new();
-   for _ in 0..20 {
-       agents.push(Agent::random_init(2));
+
+
+   for _ in 0..1000 {
+      agents.push(Agent::random_init(2));
    }
    let mut game = Game::new(agents, false);
-   game.run(1);
-   let roundstate = game.state.last().unwrap();
+   match game.run(1000) {
+      Ok(_) => (),
+      Err(e) => println!("Error in running game: {:?}", e)
+   }
+   //let roundstate = game.state.last().unwrap();
+   println!("Time taken: {:?}", t0.elapsed());
 }

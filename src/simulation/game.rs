@@ -1,19 +1,21 @@
-/* 
-Notes:
-noise with probability p the action is opposite of the intended one 
-Time t >> 1/(2p)
-
-Population dynamics of n agents
-everyone plays the prisoners dilemma with everyone else
-*/
-
-// implementation not finished
 use serde::{Serialize, Deserialize};
 use serde::ser::{SerializeMap, Serializer};
 use crate::simulation::agent::Agent;
 use std::{collections::HashMap, hash::Hash};
 use serde_json::{self, Map, Value};
+use rand::Rng;
+use rand::distributions::{Distribution, WeightedIndex};
+use std::result::Result;
+use memory_stats::memory_stats;
 
+pub fn print_memory_usage() {
+    if let Some(usage) = memory_stats() {
+        println!("Current physical memory usage: {} GB", usage.physical_mem as f64/1e6);
+        println!("Current virtual memory usage: {} GB", usage.virtual_mem as f64/1e6);
+    } else {
+        println!("Couldn't get the current memory usage :(");
+    }
+}
 #[derive(Deserialize, Clone, Debug)]
 pub struct RoundState {
     pub state: HashMap<Agent, (u32, f64, f64, f64)>, // (count, payoff, fitness, population_share)
@@ -92,6 +94,7 @@ pub struct Game {
     pub p_d : f64, // proba of GeneDuplication
     pub p_s : f64, // proba of SplitMutation
     pub d : f64, // death rate
+    n: u32, // population size
     debug: bool,
 }
 
@@ -116,14 +119,7 @@ impl Game {
             p_d: 1e-5, // GeneDuplication proba from paper
             p_s: 1e-5, // SplitMutation proba from paper
             d: 0.1,
-        }
-    }
-
-    pub fn run(&mut self, rounds: u32) -> () {
-        let mut state = GameState::new();
-        for _ in 0..rounds {
-            let (next_proba_distb, round_state) = self.compute_round();
-            self.state.push(round_state);
+            n: 1000,
         }
     }
 
@@ -133,6 +129,53 @@ impl Game {
             agents.push(Agent::random_init(m));
         }
         Game::new(agents, debug)
+    }
+
+    pub fn run(&mut self, rounds: u32) -> Result<(), String> {
+        let mut state = GameState::new();
+        for _ in 0..rounds {
+            let time = std::time::Instant::now();
+            let (next_proba_distb, round_state) = self.compute_round(self.agents.clone());
+            self.state.push(round_state);
+            //do some sort of sampling of the agents
+            let agents = self.sample_and_apply_mutations(next_proba_distb, self.n);
+            
+            if agents.keys().len() < 2 {
+                return Err(format!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", self.agents));
+            }
+            self.agents = agents;
+            if self.debug {
+                print_memory_usage();
+                println!("Time taken for round: {:?}", time.elapsed());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn sample_and_apply_mutations(
+        &self, next_proba_distb: HashMap<Agent, f64>, n: u32
+    ) -> HashMap<Agent, (u32, f64)> {
+        let mut rng = rand::thread_rng();
+        let mut new_agents : Vec<Agent> = Vec::new();
+        // Assuming Agent implements Clone + PartialEq
+        let prev_agents: Vec<Agent> = next_proba_distb.keys().cloned().collect();
+        let weights: Vec<f64> = next_proba_distb.values().cloned().collect();
+
+        let dist = WeightedIndex::new(&weights).unwrap();
+
+        for _ in 0..n {
+            let sampled_agent = prev_agents[dist.sample(&mut rng)].clone();
+            
+            let mutated_agent = sampled_agent; //TODO implement mutation self.apply_mutations(sampled_agent);
+            new_agents.push(mutated_agent);
+        }    
+
+        let new_generation = Game::get_unique_genomes(new_agents.clone());
+        if self.debug {
+            println!("total agents: {:?}", new_generation.values().map(|(count, _)| count).sum::<u32>());
+            println!("new agents count: {:?}", new_agents.len());
+        }
+        new_generation
     }
 
     fn get_unique_genomes(agents : Vec<Agent>) -> HashMap<Agent, (u32, f64)>{
@@ -148,18 +191,17 @@ impl Game {
                 *share += 1.0/total_count as f64;
             }
         }
-        return agent_map;
+        agent_map
     }
 
-    fn compute_round(&self) -> (HashMap<Agent, f64>, RoundState) {
+    fn compute_round(&self, agents : HashMap<Agent, (u32, f64)>) -> (HashMap<Agent, f64>, RoundState) {
         //computes the state of the game after one round and return proba_distb of agents in next round
-
         let mut state: HashMap<Agent, (u32, f64, f64)> = HashMap::new();
         let mut average_score = 0.0;
 
-        for (agent1, (count1, share1)) in self.agents.iter(){
+        for (agent1, (count1, share1)) in agents.iter(){
             let mut payoff1 = 0.0;
-            for (agent2, (_ , share2)) in self.agents.iter(){
+            for (agent2, (_ , share2)) in agents.iter(){
                 if agent1 == agent2 {
                     continue;
                 } 
@@ -194,9 +236,9 @@ impl Game {
         };
 
         let next_proba_distb = self.update_population_distribution( &round_state);
-        
-        return (next_proba_distb , round_state);
+        (next_proba_distb , round_state)
     }
+
     /* 
     pub fn get_proba_q_lower_ij(&self, agent: &Agent, agent_share : f64, n : u32, j: u32) -> f64 {
         // not complete yet
@@ -245,8 +287,6 @@ impl Game {
         let total_payoff: f64 = roundState.state.values().map(|(_, payoff, _, _)| payoff).sum();
         let mut total_population_share = 0.0;
         
-        println!("unique agents: {:?}", roundState.state.len());
-
         for (agent, (_, payoff, _, population_share)) in roundState.state.iter() {
             let factor: f64 = roundState.state.values()
                 .map(|(_, payoff2, _, population_share2)| (payoff2 / total_payoff) * population_share2)
@@ -269,5 +309,3 @@ impl Game {
     }
 
 }
-
-
