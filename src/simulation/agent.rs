@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use crate::simulation::types::{Mutation, PointMutation, GeneDuplication, SplitMutation};
 use rand::Rng;
+use serde::{Serialize, Deserialize};
 
-#[derive(Hash, Debug)]
+#[derive(Serialize, Deserialize, Debug, Hash)]
 pub struct Agent {
     // attributes: memory, strategy, fitness
     pub memory_len : usize, // m
@@ -41,6 +42,10 @@ impl Agent {
 
     }
 
+    pub fn to_json(&self) -> String {
+        return serde_json::to_string(&self).unwrap()
+    }
+
     pub fn new(genome : Vec<bool>, history : Vec<bool>, memory_len : u32) -> Agent {
         if genome.len() != 2usize.pow(history.len() as u32) {
             panic!(
@@ -56,6 +61,7 @@ impl Agent {
             genome: genome,
         }
     }
+
 
     pub fn map_history_to_action(&self) -> bool {
         //maps a binary sequence to an integer
