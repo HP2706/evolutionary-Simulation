@@ -2,11 +2,13 @@ use serde::{Serialize, Deserialize};
 use serde::ser::{SerializeMap, Serializer};
 use crate::simulation::agent::Agent;
 use std::{collections::HashMap, hash::Hash};
+use ahash::AHashMap;
 use serde_json::{self, Map, Value};
 use rand::Rng;
 use rand::distributions::{Distribution, WeightedIndex};
 use std::result::Result;
 use memory_stats::memory_stats;
+use std::borrow::BorrowMut;
 
 pub fn print_memory_usage() {
     if let Some(usage) = memory_stats() {
@@ -164,17 +166,27 @@ impl Game {
         let dist = WeightedIndex::new(&weights).unwrap();
 
         for _ in 0..n {
-            let sampled_agent = prev_agents[dist.sample(&mut rng)].clone();
-            
-            let mutated_agent = sampled_agent; //TODO implement mutation self.apply_mutations(sampled_agent);
-            new_agents.push(mutated_agent);
+            let mut sampled_agent = prev_agents[dist.sample(&mut rng)].clone();
+            new_agents.push(sampled_agent);
         }    
+
+        println!("unique agents before mutation: {:?}", Game::get_unique_genomes(new_agents.clone()).len());
+        for i in 0..n {
+            let old_agent = new_agents[i as usize].clone();
+            let sampled_agent = new_agents[i as usize].borrow_mut();
+            let mutated = sampled_agent.mutate(self.p_p, self.p_d, self.p_s);
+        }
+        println!("unique agents after mutation: {:?}", Game::get_unique_genomes(new_agents.clone()).len());
 
         let new_generation = Game::get_unique_genomes(new_agents.clone());
         if self.debug {
             println!("total agents: {:?}", new_generation.values().map(|(count, _)| count).sum::<u32>());
             println!("new agents count: {:?}", new_agents.len());
         }
+
+        //checking if mutations are working
+
+
         new_generation
     }
 
@@ -194,40 +206,55 @@ impl Game {
         agent_map
     }
 
-    fn compute_round(&self, agents : HashMap<Agent, (u32, f64)>) -> (HashMap<Agent, f64>, RoundState) {
+    fn compute_round(&self, mut agents : HashMap<Agent, (u32, f64)>) -> (HashMap<Agent, f64>, RoundState) {
         //computes the state of the game after one round and return proba_distb of agents in next round
-        let mut state: HashMap<Agent, (u32, f64, f64)> = HashMap::new();
-        let mut average_score = 0.0;
+        if agents.len() < 2 {
+            panic!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", agents);
+        }
 
-        for (agent1, (count1, share1)) in agents.iter(){
+        let mut state: HashMap<Agent, (u32, f64, f64, [bool; 2])> = HashMap::new();
+        let mut average_score = 0.0; // Placeholder for action history updates
+        let mut action= [false, false]; 
+        // note has to be declared as the compiler doesnt understand that it will be initialized in the loop 
+        // as the loop is quanarentted to run at least once as we dont allow agents to be less than 2
+        let mut initialized = false;
+        
+
+        for i in 0..agents.len(){
             let mut payoff1 = 0.0;
-            for (agent2, (_ , share2)) in agents.iter(){
-                if agent1 == agent2 {
+
+            let (agent1, (count1, share1)) = agents.iter().nth(i).unwrap();
+            for j in 0..agents.len(){
+                if i == j {
                     continue;
                 } 
-                
+                let (agent2, (count2, share2)) = agents.iter().nth(j).unwrap();
+
                 let action1 = agent1.map_history_to_action();
                 let action2 = agent2.map_history_to_action();
 
                 let payoff = self.payoff_map.get(&(action1, action2)).unwrap();
                 //we add the payoff to the agents, can be done more efficiently for sure
+                action = [action1, action2];
+                
                 
                 if self.debug {
                     println!("Agent1 took action: {:?} Agent2 took action: {:?}",  action1, action2);
                     println!("payofs: {:?}", payoff);
                 }
                 
-                payoff1 += payoff.0 * share2; //payoff of agent 1 against opponent X share of oppponents in population
+                payoff1 += payoff.0 * share2.clone(); 
             }
-
-            average_score += payoff1 * share1; //average score is payoff times share of agent in population
-            state.insert(agent1.clone(), (count1.clone(), payoff1, share1.clone()));
+            average_score += payoff1 * *share1; //average score is payoff times share of agent in population
+            state.insert(agent1.clone(), (count1.clone(), payoff1, share1.clone(), action));
         }
 
         let mut final_state : HashMap<Agent, (u32, f64, f64, f64)> = HashMap::new(); 
-        for (agent, (count, payoff, population_share)) in state.iter(){
-            let fitness = payoff - average_score;
-            final_state.insert(agent.clone(), (*count, *payoff, fitness, *population_share));
+        for (mut agent, (count, payoff, population_share, action)) in state.iter_mut(){
+            let fitness = *payoff - average_score;
+            let mut temp_agent = agent.clone();
+            temp_agent.add_memory(*action);  // the two lines cost us 6x in performance
+            final_state.insert(temp_agent.clone(), (*count, *payoff, fitness, *population_share));
         }
 
         let round_state = RoundState {
