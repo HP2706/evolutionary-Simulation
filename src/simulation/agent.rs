@@ -33,6 +33,7 @@ impl Eq for Agent {}
 impl Agent {
     pub fn random_init(memory_len : u32) -> Agent {
         let history = (0..memory_len).map(|_| rand::random::<bool>()).collect();
+        println!("generated History: {:?}", history);
         let genome = (0..2usize.pow(memory_len)).map(|_| rand::random::<bool>()).collect();
         Agent {
             memory_len : memory_len as usize,
@@ -66,22 +67,25 @@ impl Agent {
         }
     }
 
-
     pub fn map_history_to_action(&self) -> bool {
         //maps a binary sequence to an integer
+        println!("History: {:?}", self.history);
         let idx = self.history.iter().fold(0, |acc, &bit| (acc << 1) | (bit as u32));
+        println!("Mapped history to action: {}", idx);
+        println!("Genome: {:?}", self.genome);
+        println!("output: {}", self.genome[idx as usize]);
         return self.genome[idx as usize];
     }   
 
-    pub fn add_memory(&mut self, action : [bool; 2]) {
+    pub fn add_memory(&mut self, old_actions : [bool; 2]) {
         //we add the action pair from the last round to the memory    
         // we pop the oldest action pair and push the new one 
         if self.memory_len > self.history_len {
-            self.history.extend(action.iter());
+            self.history.extend(old_actions.iter());
             self.history_len += 2;
         } else {
             self.history.drain(0..2);
-            self.history.extend(action.iter());
+            self.history.extend(old_actions.iter());
         }
     }
 

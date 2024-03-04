@@ -12,6 +12,7 @@ use rand::distributions::{Distribution, WeightedIndex};
 use std::result::Result;
 use memory_stats::memory_stats;
 use std::borrow::BorrowMut;
+use crate::simulation::types::Game;
 
 pub fn print_memory_usage() {
     if let Some(usage) = memory_stats() {
@@ -109,7 +110,7 @@ impl RoundState {
             state: AHashMap::new(),
             average_score: 1.0,
         }
-    }
+    }   
 
     pub fn from(state: AHashMap<Agent, (u32,f64, f64, f64)>, average_score: f64) -> RoundState {
         RoundState {
@@ -128,28 +129,11 @@ impl RoundState {
     }
 }
 
-
-#[derive(Serialize, Clone, Debug)]
-pub struct GameState {
-    state: Vec<RoundState>,
-}
-
-impl GameState {
-    pub fn new() -> GameState {
-        GameState {
-            state: vec![],
-        }
-    }
-
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(&self).unwrap()
-    }
-}
-
-pub struct Game {
-    payoff_map: AHashMap<(bool, bool), (f64, f64)>,
+#[derive(Clone, Debug)]
+pub struct GamePlay {
+    game: Game,
     pub agents: AHashMap<Agent, (u32, f64)>,
-    pub state: Vec<RoundState>, //initialize as None
+    pub gamestate: Vec<RoundState>, //initialize as None
 
     // note these probabilities might be conditioned on the agent in some way so 
     // another data structure might be needed
@@ -161,22 +145,20 @@ pub struct Game {
     debug: bool,
 }
 
-impl Game {
-    pub fn new(agents: Vec<Agent>, debug : bool) -> Game {
-        let mut payoff_map = AHashMap::new();
-        // we are using the prisoners dilemma as an example
-        payoff_map.insert((true, true), (1.0, 1.0));
-        payoff_map.insert((true, false), (0.0, 3.0));
-        payoff_map.insert((false, true), (3.0, 0.0));
-        payoff_map.insert((false, false), (2.0, 2.0));
+impl GamePlay {
+    pub fn new(agents: Vec<Agent>, debug : bool, game : Option<Game>) -> GamePlay {
+        let agents = GamePlay::get_unique_genomes(agents);
 
-        // we compress to AHashMap
-        let agents = Game::get_unique_genomes(agents);
+        //we default to the prisoners dilemma game if no game is provided
+        let game = match game {
+            Some(game) => game,
+            None => Game::new("prisoners_dilemma".to_string()).expect("Error in creating game"),
+        };
 
-        Game {
-            payoff_map: payoff_map,
+        GamePlay {
+            game: game,
             agents: agents,
-            state: vec![],
+            gamestate: Vec::new(),
             debug: debug,
             p_p: 2e-5, // PointMutation proba from paper
             p_d: 1e-5, // GeneDuplication proba from paper
@@ -186,20 +168,22 @@ impl Game {
         }
     }
 
-    pub fn random_init(n: u32, m: u32, debug : bool) -> Game {
+    pub fn random_init(n: u32, m: u32, debug : bool) -> GamePlay {
         let mut agents: Vec<Agent> = Vec::new();
         for _ in 0..n {
             agents.push(Agent::random_init(m));
         }
-        Game::new(agents, debug)
-    }
+
+        let game = Game::new("prisoners_dilemma".to_string()).expect("Error in creating game");
+        GamePlay::new(agents, debug, Some(game))
+    } 
 
     pub fn run(&mut self, rounds: u32) -> Result<(), String> {
-        let mut state = GameState::new();
+        let mut state : Vec<RoundState> = Vec::new();
         for _ in 0..rounds {
+
             let time = std::time::Instant::now();
-            let (next_proba_distb, round_state) = self.compute_round(self.agents.clone());
-            self.state.push(round_state);
+            let next_proba_distb = self.compute_round(self.agents.clone());
             //do some sort of sampling of the agents
             let agents = self.sample_and_apply_mutations(next_proba_distb, self.n);
             
@@ -224,6 +208,7 @@ impl Game {
         let prev_agents: Vec<Agent> = next_proba_distb.keys().cloned().collect();
         let weights: Vec<f64> = next_proba_distb.values().cloned().collect();
 
+        println!("weights: {:?}", weights);
         let dist = WeightedIndex::new(&weights).unwrap();
 
         for _ in 0..n {
@@ -231,23 +216,28 @@ impl Game {
             new_agents.push(sampled_agent);
         }    
 
-        println!("unique agents before mutation: {:?}", Game::get_unique_genomes(new_agents.clone()).len());
+        if self.debug {
+            println!("unique agents before mutation: {:?}", GamePlay::get_unique_genomes(new_agents.clone()).len());
+        }
+        
         for i in 0..n {
             let old_agent = new_agents[i as usize].clone();
             let sampled_agent = new_agents[i as usize].borrow_mut();
-            let mutated = sampled_agent.mutate(self.p_p, self.p_d, self.p_s);
+            let mutated = sampled_agent.mutate(self.p_p, self.p_d, self.p_s); 
+            //TODO if mutated, split from old key and add new entry
         }
-        println!("unique agents after mutation: {:?}", Game::get_unique_genomes(new_agents.clone()).len());
+        
+        if self.debug {
+            println!("unique agents after mutation: {:?}", GamePlay::get_unique_genomes(new_agents.clone()).len());
+        }
 
-        let new_generation = Game::get_unique_genomes(new_agents.clone());
+        let new_generation = GamePlay::get_unique_genomes(new_agents.clone());
         if self.debug {
             println!("total agents: {:?}", new_generation.values().map(|(count, _)| count).sum::<u32>());
             println!("new agents count: {:?}", new_agents.len());
         }
 
         //checking if mutations are working
-
-
         new_generation
     }
 
@@ -267,7 +257,7 @@ impl Game {
         agent_map
     }
 
-    fn compute_round(&self, mut agents : AHashMap<Agent, (u32, f64)>) -> (AHashMap<Agent, f64>, RoundState) {
+    fn compute_round(&self, mut agents : AHashMap<Agent, (u32, f64)>) -> AHashMap<Agent, f64> {
         //computes the state of the game after one round and return proba_distb of agents in next round
         if agents.len() < 2 {
             panic!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", agents);
@@ -294,27 +284,29 @@ impl Game {
                 let action1 = agent1.map_history_to_action();
                 let action2 = agent2.map_history_to_action();
 
-                let payoff = self.payoff_map.get(&(action1, action2)).unwrap();
+                let payoff = self.game.get_payoff((action1, action2));
                 //we add the payoff to the agents, can be done more efficiently for sure
+                println!("agent one took action: {:?}", action1);
+                println!("agent two took action: {:?}", action2);
                 action = [action1, action2];
-                
                 
                 if self.debug {
                     println!("Agent1 took action: {:?} Agent2 took action: {:?}",  action1, action2);
                     println!("payofs: {:?}", payoff);
                 }
                 
-                payoff1 += payoff.0 * share2.clone(); 
+                payoff1 += payoff.0 * share2.clone(); // increment by the payoff against agent2 times agent2's share in the population
             }
             average_score += payoff1 * *share1; //average score is payoff times share of agent in population
             state.insert(agent1.clone(), (count1.clone(), payoff1, share1.clone(), action));
         }
 
+        //we need to have the average in order to calculate the fitness
         let mut final_state : AHashMap<Agent, (u32, f64, f64, f64)> = AHashMap::new(); 
-        for (mut agent, (count, payoff, population_share, action)) in state.iter_mut(){
+        for (agent, (count, payoff, population_share, action)) in state.iter_mut(){
             let fitness = *payoff - average_score;
             let mut temp_agent = agent.clone();
-            temp_agent.add_memory(*action);  // the two lines cost us 6x in performance
+            temp_agent.add_memory(*action); 
             final_state.insert(temp_agent.clone(), (*count, *payoff, fitness, *population_share));
         }
 
@@ -322,9 +314,9 @@ impl Game {
             state: final_state,
             average_score: average_score,
         };
-
+        
         let next_proba_distb = self.update_population_distribution( &round_state);
-        (next_proba_distb , round_state)
+        next_proba_distb
     }
 
     /* 
@@ -370,27 +362,48 @@ impl Game {
         m_i
     } */
 
-    pub fn update_population_distribution(&self, roundState: &RoundState) -> AHashMap<Agent, f64> {
-        let mut proba_distb = AHashMap::new();
-        let total_payoff: f64 = roundState.state.values().map(|(_, payoff, _, _)| payoff).sum();
-        let mut total_population_share = 0.0;
-        
-        for (agent, (_, payoff, _, population_share)) in roundState.state.iter() {
-            let factor: f64 = roundState.state.values()
-                .map(|(_, payoff2, _, population_share2)| (payoff2 / total_payoff) * population_share2)
-                .sum();
+    pub fn update_population_distribution(&self, last_roundState: &RoundState) -> AHashMap<Agent, f64> {
+        let mut proba_distb: AHashMap<Agent, f64> = AHashMap::new();
+        let mut counts : Vec<u32> = Vec::new();
+        let mut total_next_proba = 0.0;
 
-            // implementing m_i from the paper.            
+        for (agent, (count, payoff, fitness, population_share)) in last_roundState.state.iter() {
+            let x = 1.0 - last_roundState.state.iter().map(
+                    |(agent2, (_, payoff2, _, population_share2))| 
+                    if agent == agent2 {0.0} else {(payoff2*population_share2)/payoff }
+                ).sum::<f64>();
+            
+            println!("agent: {:?}", agent);
+            println!("payoff: {:?}", payoff);
+            println!("fitness: {:?}", fitness);
+            println!("population_share: {:?}", population_share);
 
-            let updated_population_share = self.d * payoff * population_share * (1.0 - factor);
-            proba_distb.insert(agent.clone(), updated_population_share);
-            total_population_share += updated_population_share;
+            let next_proba = payoff * self.d * population_share * x;
+
+            if (next_proba > (1.0 / self.n as f64)) {
+                //we only add the agent to the next round if the probability is greater than 1/n
+                proba_distb.insert(agent.clone(), next_proba);
+                total_next_proba += next_proba;
+                counts.push(*count);
+            } else {
+                println!("excluding with proba: {:?}", next_proba);
+            }
         }
-    
-        // Normalize the population distribution to sum to 1 and normalize by count of each genome
-        for (value,  (count, share)) in std::iter::zip(proba_distb.values_mut(), self.agents.values()) {
-            let divisor = (total_population_share* (*count as f64));
-            *value /= divisor;
+
+        if total_next_proba > 0.0 {
+            for (agent, proba) in proba_distb.iter_mut() {
+                *proba /= total_next_proba;
+            }
+        } else {
+            panic!("Total next probability is 0, cannot normalize distribution");
+        }
+
+        // Check if the probability distribution sums to 1
+        let proba_sum: f64 = std::iter::zip(proba_distb.values(), counts).
+            map(|(proba, _ )| proba).sum();
+            
+        if (1.0 - proba_sum).abs() > 1e-5 {
+            panic!("Proba distribution does not sum to 1 got: {:?}", proba_sum);
         }
     
         proba_distb
