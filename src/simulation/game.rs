@@ -1,9 +1,12 @@
-use serde::{Serialize, Deserialize};
+use serde::{Serialize};
 use serde::ser::{SerializeMap, Serializer};
-use crate::simulation::agent::Agent;
-use std::{collections::HashMap, hash::Hash};
-use ahash::AHashMap;
 use serde_json::{self, Map, Value};
+use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
+
+use crate::simulation::agent::Agent;
+use std::{hash::Hash};
+use ahash::AHashMap; // this is a bit faster than the standard HashMap
+use std::fmt;
 use rand::Rng;
 use rand::distributions::{Distribution, WeightedIndex};
 use std::result::Result;
@@ -18,11 +21,69 @@ pub fn print_memory_usage() {
         println!("Couldn't get the current memory usage :(");
     }
 }
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct RoundState {
-    pub state: HashMap<Agent, (u32, f64, f64, f64)>, // (count, payoff, fitness, population_share)
+    pub state: AHashMap<Agent, (u32, f64, f64, f64)>, // (count, payoff, fitness, population_share)
     average_score: f64,
 }
+
+impl<'de> Deserialize<'de> for RoundState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct RoundStateVisitor;
+
+        impl<'de> Visitor<'de> for RoundStateVisitor {
+            type Value = RoundState;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct RoundState")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<RoundState, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut state: Option<Vec<(Agent, (u32, f64, f64, f64))>> = None;
+                let mut average_score = None;
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "state" => {
+                            if state.is_some() {
+                                return Err(de::Error::duplicate_field("state"));
+                            }
+                            // Deserialize as a vector of tuples
+                            state = Some(map.next_value::<Vec<(Agent, (u32, f64, f64, f64))>>()?);
+                        }
+                        "average_score" => {
+                            if average_score.is_some() {
+                                return Err(de::Error::duplicate_field("average_score"));
+                            }
+                            average_score = Some(map.next_value()?);
+                        }
+                        _ => {
+                            // Ignore unknown fields
+                            let _ = map.next_value::<de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                let state = state.ok_or_else(|| de::Error::missing_field("state"))?;
+                let average_score = average_score.ok_or_else(|| de::Error::missing_field("average_score"))?;
+
+                // Convert the Vec<(Agent, (u32, f64, f64, f64))> into AHashMap<Agent, (u32, f64, f64, f64)>
+                let state_map = state.into_iter().collect::<AHashMap<Agent, (u32, f64, f64, f64)>>();
+
+                Ok(RoundState { state: state_map, average_score })
+            }
+        }
+
+        const FIELDS: &'static [&'static str] = &["state", "average_score"];
+        deserializer.deserialize_struct("RoundState", FIELDS, RoundStateVisitor)
+    }
+}
+
 impl Serialize for RoundState {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -45,12 +106,12 @@ impl Serialize for RoundState {
 impl RoundState {
     pub fn new() -> RoundState {
         RoundState {
-            state: HashMap::new(),
+            state: AHashMap::new(),
             average_score: 1.0,
         }
     }
 
-    pub fn from(state: HashMap<Agent, (u32,f64, f64, f64)>, average_score: f64) -> RoundState {
+    pub fn from(state: AHashMap<Agent, (u32,f64, f64, f64)>, average_score: f64) -> RoundState {
         RoundState {
             state: state,
             average_score: average_score,
@@ -68,7 +129,7 @@ impl RoundState {
 }
 
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug)]
 pub struct GameState {
     state: Vec<RoundState>,
 }
@@ -86,8 +147,8 @@ impl GameState {
 }
 
 pub struct Game {
-    payoff_map: HashMap<(bool, bool), (f64, f64)>,
-    pub agents: HashMap<Agent, (u32, f64)>,
+    payoff_map: AHashMap<(bool, bool), (f64, f64)>,
+    pub agents: AHashMap<Agent, (u32, f64)>,
     pub state: Vec<RoundState>, //initialize as None
 
     // note these probabilities might be conditioned on the agent in some way so 
@@ -102,14 +163,14 @@ pub struct Game {
 
 impl Game {
     pub fn new(agents: Vec<Agent>, debug : bool) -> Game {
-        let mut payoff_map = HashMap::new();
+        let mut payoff_map = AHashMap::new();
         // we are using the prisoners dilemma as an example
         payoff_map.insert((true, true), (1.0, 1.0));
         payoff_map.insert((true, false), (0.0, 3.0));
         payoff_map.insert((false, true), (3.0, 0.0));
         payoff_map.insert((false, false), (2.0, 2.0));
 
-        // we compress to hashmap
+        // we compress to AHashMap
         let agents = Game::get_unique_genomes(agents);
 
         Game {
@@ -155,8 +216,8 @@ impl Game {
     }
 
     pub fn sample_and_apply_mutations(
-        &self, next_proba_distb: HashMap<Agent, f64>, n: u32
-    ) -> HashMap<Agent, (u32, f64)> {
+        &self, next_proba_distb: AHashMap<Agent, f64>, n: u32
+    ) -> AHashMap<Agent, (u32, f64)> {
         let mut rng = rand::thread_rng();
         let mut new_agents : Vec<Agent> = Vec::new();
         // Assuming Agent implements Clone + PartialEq
@@ -190,8 +251,8 @@ impl Game {
         new_generation
     }
 
-    fn get_unique_genomes(agents : Vec<Agent>) -> HashMap<Agent, (u32, f64)>{
-        let mut agent_map: HashMap<Agent, (u32, f64)> = HashMap::new();
+    fn get_unique_genomes(agents : Vec<Agent>) -> AHashMap<Agent, (u32, f64)>{
+        let mut agent_map: AHashMap<Agent, (u32, f64)> = AHashMap::new();
         let total_count = agents.len(); 
         for (idx, agent) in agents.iter().enumerate() {
             if !agent_map.contains_key(agent) {
@@ -206,13 +267,13 @@ impl Game {
         agent_map
     }
 
-    fn compute_round(&self, mut agents : HashMap<Agent, (u32, f64)>) -> (HashMap<Agent, f64>, RoundState) {
+    fn compute_round(&self, mut agents : AHashMap<Agent, (u32, f64)>) -> (AHashMap<Agent, f64>, RoundState) {
         //computes the state of the game after one round and return proba_distb of agents in next round
         if agents.len() < 2 {
             panic!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", agents);
         }
 
-        let mut state: HashMap<Agent, (u32, f64, f64, [bool; 2])> = HashMap::new();
+        let mut state: AHashMap<Agent, (u32, f64, f64, [bool; 2])> = AHashMap::new();
         let mut average_score = 0.0; // Placeholder for action history updates
         let mut action= [false, false]; 
         // note has to be declared as the compiler doesnt understand that it will be initialized in the loop 
@@ -249,7 +310,7 @@ impl Game {
             state.insert(agent1.clone(), (count1.clone(), payoff1, share1.clone(), action));
         }
 
-        let mut final_state : HashMap<Agent, (u32, f64, f64, f64)> = HashMap::new(); 
+        let mut final_state : AHashMap<Agent, (u32, f64, f64, f64)> = AHashMap::new(); 
         for (mut agent, (count, payoff, population_share, action)) in state.iter_mut(){
             let fitness = *payoff - average_score;
             let mut temp_agent = agent.clone();
@@ -309,8 +370,8 @@ impl Game {
         m_i
     } */
 
-    pub fn update_population_distribution(&self, roundState: &RoundState) -> HashMap<Agent, f64> {
-        let mut proba_distb = HashMap::new();
+    pub fn update_population_distribution(&self, roundState: &RoundState) -> AHashMap<Agent, f64> {
+        let mut proba_distb = AHashMap::new();
         let total_payoff: f64 = roundState.state.values().map(|(_, payoff, _, _)| payoff).sum();
         let mut total_population_share = 0.0;
         
