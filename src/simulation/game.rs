@@ -13,6 +13,9 @@ use std::result::Result;
 use memory_stats::memory_stats;
 use std::borrow::BorrowMut;
 use crate::simulation::types::Game;
+use rayon::prelude::*;
+use std::sync::{Arc, Mutex};
+
 
 pub fn print_memory_usage() {
     if let Some(usage) = memory_stats() {
@@ -179,11 +182,12 @@ impl GamePlay {
     } 
 
     pub fn run(&mut self, rounds: u32) -> Result<(), String> {
-        let mut state : Vec<RoundState> = Vec::new();
         for _ in 0..rounds {
-
             let time = std::time::Instant::now();
-            let next_proba_distb = self.compute_round(self.agents.clone());
+            let round_state = self.compute_round(self.agents.clone());
+            self.gamestate.push(round_state.clone());
+            let next_proba_distb = self.update_population_distribution( &round_state);
+
             //do some sort of sampling of the agents
             let agents = self.sample_and_apply_mutations(next_proba_distb, self.n);
             
@@ -208,7 +212,10 @@ impl GamePlay {
         let prev_agents: Vec<Agent> = next_proba_distb.keys().cloned().collect();
         let weights: Vec<f64> = next_proba_distb.values().cloned().collect();
 
-        println!("weights: {:?}", weights);
+        if self.debug {
+            println!("weights: {:?}", weights);
+        }
+        
         let dist = WeightedIndex::new(&weights).unwrap();
 
         for _ in 0..n {
@@ -257,23 +264,19 @@ impl GamePlay {
         agent_map
     }
 
-    fn compute_round(&self, mut agents : AHashMap<Agent, (u32, f64)>) -> AHashMap<Agent, f64> {
+    fn compute_round(&self, agents : AHashMap<Agent, (u32, f64)>) -> RoundState {
         //computes the state of the game after one round and return proba_distb of agents in next round
         if agents.len() < 2 {
             panic!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", agents);
         }
 
-        let mut state: AHashMap<Agent, (u32, f64, f64, [bool; 2])> = AHashMap::new();
-        let mut average_score = 0.0; // Placeholder for action history updates
-        let mut action= [false, false]; 
-        // note has to be declared as the compiler doesnt understand that it will be initialized in the loop 
-        // as the loop is quanarentted to run at least once as we dont allow agents to be less than 2
-        let mut initialized = false;
-        
+        let state = Arc::new(Mutex::new(AHashMap::new()));
+        let action_mutex = Mutex::new([false, false]); // Initialize the mutex outside the parallel iterator
+        let average_score = Arc::new(Mutex::new(0.0)); // Initialize average_score with Arc and Mutex
 
-        for i in 0..agents.len(){
+        let t0 = std::time::Instant::now();
+        (0..agents.len()).into_par_iter().for_each(|i| {
             let mut payoff1 = 0.0;
-
             let (agent1, (count1, share1)) = agents.iter().nth(i).unwrap();
             for j in 0..agents.len(){
                 if i == j {
@@ -286,9 +289,8 @@ impl GamePlay {
 
                 let payoff = self.game.get_payoff((action1, action2));
                 //we add the payoff to the agents, can be done more efficiently for sure
-                println!("agent one took action: {:?}", action1);
-                println!("agent two took action: {:?}", action2);
-                action = [action1, action2];
+            
+                *action_mutex.lock().unwrap() = [action1, action2];
                 
                 if self.debug {
                     println!("Agent1 took action: {:?} Agent2 took action: {:?}",  action1, action2);
@@ -297,26 +299,35 @@ impl GamePlay {
                 
                 payoff1 += payoff.0 * share2.clone(); // increment by the payoff against agent2 times agent2's share in the population
             }
-            average_score += payoff1 * *share1; //average score is payoff times share of agent in population
-            state.insert(agent1.clone(), (count1.clone(), payoff1, share1.clone(), action));
-        }
+            let mut state_guard = state.lock().unwrap();
+            let mut avg_score = average_score.lock().unwrap(); // Lock average_score for modification
+            *avg_score += payoff1 * *share1; //average score is payoff times share of agent in population
+            state_guard.insert(
+                agent1.clone(), (count1.clone(), payoff1, share1.clone(), (*action_mutex.lock().unwrap()).clone())
+            );
+        });
+        println!("Time taken to compute round for round: {:?}", t0.elapsed());
 
         //we need to have the average in order to calculate the fitness
-        let mut final_state : AHashMap<Agent, (u32, f64, f64, f64)> = AHashMap::new(); 
-        for (agent, (count, payoff, population_share, action)) in state.iter_mut(){
-            let fitness = *payoff - average_score;
+        //parallelize the update of the state
+        let final_state = Mutex::new(AHashMap::new());
+        state.lock().unwrap().par_iter_mut().for_each(|(agent, (count, payoff, population_share, action))| {
+            let fitness = *payoff - *average_score.lock().unwrap();
             let mut temp_agent = agent.clone();
-            temp_agent.add_memory(*action); 
-            final_state.insert(temp_agent.clone(), (*count, *payoff, fitness, *population_share));
-        }
+            temp_agent.add_memory(*action);
+            
+            let mut final_state_guard = final_state.lock().unwrap(); // Locking for each insertion. Consider performance implications.
+            final_state_guard.insert(temp_agent.clone(), (*count, *payoff, fitness, *population_share));
+        });
 
-        let round_state = RoundState {
+        // To access `final_state` after filling it, make sure you do it outside of parallel sections.
+        let final_state = final_state.into_inner().unwrap(); 
+    
+        return RoundState {
             state: final_state,
-            average_score: average_score,
+            average_score: *average_score.lock().unwrap(),
         };
-        
-        let next_proba_distb = self.update_population_distribution( &round_state);
-        next_proba_distb
+
     }
 
     /* 
@@ -373,10 +384,12 @@ impl GamePlay {
                     if agent == agent2 {0.0} else {(payoff2*population_share2)/payoff }
                 ).sum::<f64>();
             
-            println!("agent: {:?}", agent);
-            println!("payoff: {:?}", payoff);
-            println!("fitness: {:?}", fitness);
-            println!("population_share: {:?}", population_share);
+            if self.debug {
+                println!("agent: {:?}", agent);
+                println!("payoff: {:?}", payoff);
+                println!("fitness: {:?}", fitness);
+                println!("population_share: {:?}", population_share);
+            }
 
             let next_proba = payoff * self.d * population_share * x;
 

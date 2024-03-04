@@ -33,7 +33,6 @@ impl Eq for Agent {}
 impl Agent {
     pub fn random_init(memory_len : u32) -> Agent {
         let history = (0..memory_len).map(|_| rand::random::<bool>()).collect();
-        println!("generated History: {:?}", history);
         let genome = (0..2usize.pow(memory_len)).map(|_| rand::random::<bool>()).collect();
         Agent {
             memory_len : memory_len as usize,
