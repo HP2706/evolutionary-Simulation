@@ -6,6 +6,7 @@ use std::iter::{zip};
 use std::option::Option;
 use rand::Rng;
 use rayon::prelude::*;
+
 fn main() {
    //time
    let t0 = std::time::Instant::now();
@@ -24,6 +25,8 @@ fn main() {
       Ok(_) => (),
       Err(e) => println!("Error in running game: {:?}", e)
    }
+
+   game.dump_history_to_file("game_history.json");
    //let roundstate = game.state.last().unwrap();
    println!("Time taken: {:?}", t0.elapsed());
    println!("Game state length: {:?}", game.gamestate.len());

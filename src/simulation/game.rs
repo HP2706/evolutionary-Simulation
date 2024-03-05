@@ -7,7 +7,6 @@ use crate::simulation::{agent::Agent,types::AgentRoundData};
 use std::{hash::Hash};
 use ahash::AHashMap; // this is a bit faster than the standard HashMap
 use std::fmt;
-use rand::Rng;
 use rand::distributions::{Distribution, WeightedIndex};
 use std::result::Result;
 use memory_stats::memory_stats;
@@ -15,6 +14,8 @@ use std::borrow::BorrowMut;
 use crate::simulation::types::Game;
 use rayon::prelude::*;
 use std::sync::{Arc, Mutex};
+use rand::{SeedableRng, Rng};
+use rand::rngs::StdRng;
 
 
 pub fn print_memory_usage() {
@@ -132,6 +133,7 @@ impl RoundState {
     }
 }
 
+/// The GamePlay struct is the main struct that holds the state of the game and the agents
 #[derive(Clone, Debug)]
 pub struct GamePlay {
     game: Game,
@@ -167,6 +169,7 @@ impl Serialize for GamePlay {
     }
 }
 
+
 impl GamePlay {
     pub fn new(agents: Vec<Agent>, debug : bool, game : Option<Game>) -> GamePlay {
         let agents = GamePlay::get_unique_genomes(agents);
@@ -195,6 +198,14 @@ impl GamePlay {
         std::fs::write(filename, json).expect("Unable to write file");
     }
 
+    /// Initializes a new GamePlay object with a random population of agents
+    /// # Arguments
+    /// 
+    /// * `n` - u32 - number of agents in the population
+    /// * `m` - u32 - length of the memory of the agents
+    /// * `debug` - bool - whether to print debug information
+    /// # Returns
+    /// * GamePlay - a new GamePlay object
     pub fn random_init(n: u32, m: u32, debug : bool) -> GamePlay {
         let mut agents: Vec<Agent> = Vec::new();
         for _ in 0..n {
@@ -205,17 +216,28 @@ impl GamePlay {
         GamePlay::new(agents, debug, Some(game))
     } 
 
+    /// Runs the simulation for a given number of rounds. Mutates the gameplay object in place.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `rounds` - u32 - number of rounds to run the simulation for
+    /// 
+    /// # Returns
+    /// 
+    /// * Result<(), String> - Ok(()) if the simulation runs successfully, Err(String) if there is an error
     pub fn run(&mut self, rounds: u32) -> Result<(), String> {
         for _ in 0..rounds {
             let time = std::time::Instant::now();
-            let (round_state, agents) = self.compute_round(self.agents.clone()); // this computes an entire round of the game.
+            let (round_state, proba_distb) = self.compute_round(self.agents.clone()); // this computes an entire round of the game.
             self.gamestate.push(round_state.clone());
             
-            if agents.keys().len() < 2 {
+            //get agents for next round
+            self.agents = self.sample_and_apply_mutations(proba_distb);
+            
+            if self.agents.keys().len() < 2 {
                 return Err(format!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", self.agents));
             }
-
-            self.agents = agents;
+            
             if self.debug {
                 print_memory_usage();
                 println!("Time taken for round: {:?}", time.elapsed());
@@ -224,12 +246,19 @@ impl GamePlay {
         Ok(())
     }
 
+    /// samples from a probability distribution of agents ocurring in next round 
+    /// and subsequently samples mutations to the agents
+    /// 
+    /// # Arguments
+    /// 
+    /// * `next_proba_distb` - AHashMap<Agent, f64> - probability distribution of agents ocurring in next round
+    /// 
+    /// # Returns
+    /// 
+    /// * AHashMap<Agent, (u32, f64)> - AHashMap of agents and their respective counts and shares in the next round
     pub fn sample_and_apply_mutations(
-        &self, next_proba_distb: AHashMap<Agent, f64>, n: u32
+        &self, next_proba_distb: AHashMap<Agent, f64>
     ) -> AHashMap<Agent, (u32, f64)> {
-        let mut rng = rand::thread_rng();
-        let mut new_agents : Vec<Agent> = Vec::new();
-        // Assuming Agent implements Clone + PartialEq
         let prev_agents: Vec<Agent> = next_proba_distb.keys().cloned().collect();
         let weights: Vec<f64> = next_proba_distb.values().cloned().collect();
 
@@ -238,26 +267,15 @@ impl GamePlay {
         }
         
         let dist = WeightedIndex::new(&weights).unwrap();
-
-        for _ in 0..n {
-            let mut sampled_agent = prev_agents[dist.sample(&mut rng)].clone();
-            new_agents.push(sampled_agent);
-        }    
-
-        if self.debug {
-            println!("unique agents before mutation: {:?}", GamePlay::get_unique_genomes(new_agents.clone()).len());
-        }
-        
-        for i in 0..n {
-            let old_agent = new_agents[i as usize].clone();
-            let sampled_agent = new_agents[i as usize].borrow_mut();
-            let mutated = sampled_agent.mutate(self.p_p, self.p_d, self.p_s); 
-            //TODO if mutated, split from old key and add new entry
-        }
-        
-        if self.debug {
-            println!("unique agents after mutation: {:?}", GamePlay::get_unique_genomes(new_agents.clone()).len());
-        }
+        let seed = [0u8; 32]; // You might want to generate a more dynamic seed
+   
+        let new_agents: Vec<Agent> = (0..self.n).into_par_iter()
+            .map_with(StdRng::from_seed(seed), |rng, _| {
+                let mut sampled_agent = prev_agents[dist.sample(rng)].clone();
+                sampled_agent.mutate(self.p_p, self.p_d, self.p_s);
+                sampled_agent
+            }
+        ).collect();
 
         let new_generation = GamePlay::get_unique_genomes(new_agents.clone());
         if self.debug {
@@ -269,6 +287,13 @@ impl GamePlay {
         new_generation
     }
 
+
+    /// Returns a hashmap of agents and their respective counts and shares in the population
+    /// 
+    /// # Arguments
+    /// * `agents` - Vec<Agent> - vector of agents with duplicates
+    /// # Returns
+    /// * AHashMap<Agent, (u32, f64)> - AHashMap of unique agents and their respective counts and shares in the population
     fn get_unique_genomes(agents : Vec<Agent>) -> AHashMap<Agent, (u32, f64)>{
         let mut agent_map: AHashMap<Agent, (u32, f64)> = AHashMap::new();
         let total_count = agents.len(); 
@@ -285,7 +310,12 @@ impl GamePlay {
         agent_map
     }
 
-    fn compute_round(&self, agents : AHashMap<Agent, (u32, f64)>) -> (RoundState, AHashMap<Agent, (u32, f64)>){
+    /// Computes the state of the game after one round from the current agents
+    /// # Arguments
+    /// * `agents` - AHashMap<Agent, (u32, f64)> - AHashMap of agents and their respective counts and shares in the population
+    /// # Returns
+    /// * (RoundState, AHashMap<Agent, (u32, f64)>) - A tuple of the round state and the count and population share of agents in the next round
+    fn compute_round(&self, mut agents : AHashMap<Agent, (u32, f64)>) -> (RoundState, AHashMap<Agent, f64>){
         //computes the state of the game after one round and return proba_distb of agents in next round
         if agents.len() < 2 {
             panic!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", agents);
@@ -301,7 +331,7 @@ impl GamePlay {
         //the outer loop is parallelized
         (0..agents.len()).into_par_iter().for_each(|i| {
             let mut payoff1 = 0.0;
-            
+
             let (agent1, (count1, share1)) = agents.iter().nth(i).unwrap();
             for j in 0..agents.len(){
                 if i == j {
@@ -336,34 +366,24 @@ impl GamePlay {
         println!("Time taken to compute round for round: {:?}", t0.elapsed());
 
         //we need to have the average in order to calculate the fitness
-        //parallelize the update of the state
-        let final_state = Mutex::new(AHashMap::new());
-        state.lock().unwrap().par_iter_mut().for_each(|(agent, (count, payoff, population_share, action))| {
-            let fitness = *payoff - *average_score.lock().unwrap();
+        //we first update the memory of the agents after the round is done
+        
+        let average_score = *average_score.lock().unwrap();
+        let final_state: AHashMap<Agent, AgentRoundData> = state.lock().unwrap().iter().map(|(agent, (count, payoff, population_share, action))| {
+            let fitness = *payoff - average_score;
             let mut temp_agent = agent.clone();
             temp_agent.add_memory(*action);
-            
-            let mut final_state_guard = final_state.lock().unwrap(); // Locking for each insertion. Consider performance implications.
-            final_state_guard.insert(temp_agent.clone(), (*count, *payoff, fitness, *population_share));
-        });
-
-        // To access `final_state` after filling it, make sure you do it outside of parallel sections.
-        let final_state = final_state.into_inner().unwrap(); 
-        let formatted_final_state = final_state.iter().map(|(agent, (count, payoff, fitness, population_share))| {
-            (agent.clone(), AgentRoundData::from(*count, *payoff, *fitness, *population_share))
-        }).collect::<AHashMap<Agent, AgentRoundData>>();
+            (temp_agent, AgentRoundData::from(*count, *payoff, fitness, *population_share))
+        }).collect();
     
         let round_state =  RoundState {
-            state: formatted_final_state,
-            average_score: *average_score.lock().unwrap(),
+            state: final_state,
+            average_score: average_score,
         };
 
+        //we get the probability distribution for the next round
         let next_proba_distb = self.update_population_distribution( &round_state);
-
-        //do some sort of sampling of the agents
-        let agents = self.sample_and_apply_mutations(next_proba_distb, self.n);
-        return (round_state, agents);
-
+        return (round_state, next_proba_distb);
 
     }
 
