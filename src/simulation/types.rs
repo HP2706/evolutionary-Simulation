@@ -33,3 +33,26 @@ impl Game {
         }
     }
 }
+
+
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AgentRoundData {
+    pub count : u32, 
+    pub score : f64,
+    pub fitness : f64,
+    pub population_share : f64
+}
+
+
+impl AgentRoundData {
+    pub fn from(count: u32, score : f64, fitness : f64, population_share : f64) -> AgentRoundData {
+        AgentRoundData {
+            count: count,
+            score: score,
+            fitness: fitness,
+            population_share: population_share
+        }
+    }
+
+}

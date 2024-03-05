@@ -4,6 +4,7 @@ use rand_distr::{Distribution, Poisson};
 #[derive(Serialize, Deserialize, Debug, Hash)]
 pub struct Agent {
     // attributes: memory, strategy, fitness
+    pub id : String,
     pub memory_len : usize, // m
     pub history: Vec<bool>, // length m [a_m-1, a_m-2, ...,a_1, a_0]
     pub history_len : usize, // we maintain the length of the history to avoid recomputation
@@ -14,6 +15,7 @@ pub struct Agent {
 impl Clone for Agent {
     fn clone(&self) -> Agent {
         Agent {
+            id: self.id.clone(),
             memory_len: self.memory_len,
             history: self.history.clone(),
             history_len: self.history_len,
@@ -33,8 +35,9 @@ impl Eq for Agent {}
 impl Agent {
     pub fn random_init(memory_len : u32) -> Agent {
         let history = (0..memory_len).map(|_| rand::random::<bool>()).collect();
-        let genome = (0..2usize.pow(memory_len)).map(|_| rand::random::<bool>()).collect();
+        let genome : Vec<bool> = (0..2usize.pow(memory_len)).map(|_| rand::random::<bool>()).collect();
         Agent {
+            id : Agent::genome_to_id(genome.clone()),
             memory_len : memory_len as usize,
             history: history,
             history_len: memory_len as usize,
@@ -42,6 +45,18 @@ impl Agent {
         }
 
     }
+
+    pub fn genome_to_id(genome : Vec<bool>) -> String {
+        let mut id = String::new();
+        for (i, &bit) in genome.iter().enumerate() {
+           if bit {
+              id.push('1');
+           } else {
+              id.push('0');
+           }
+        }
+        return id;
+     }
 
     pub fn to_json(&self) -> String {
         return serde_json::to_string(&self).unwrap()
@@ -59,6 +74,7 @@ impl Agent {
         let len = history.len();
 
         Agent {
+            id : Agent::genome_to_id(genome.clone()),
             memory_len : memory_len as usize,
             history: history,
             history_len: len,

@@ -3,7 +3,7 @@ use serde::ser::{SerializeMap, Serializer};
 use serde_json::{self, Map, Value};
 use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 
-use crate::simulation::agent::Agent;
+use crate::simulation::{agent::Agent,types::AgentRoundData};
 use std::{hash::Hash};
 use ahash::AHashMap; // this is a bit faster than the standard HashMap
 use std::fmt;
@@ -27,7 +27,7 @@ pub fn print_memory_usage() {
 }
 #[derive(Clone, Debug)]
 pub struct RoundState {
-    pub state: AHashMap<Agent, (u32, f64, f64, f64)>, // (count, payoff, fitness, population_share)
+    pub state: AHashMap<Agent, AgentRoundData>, // (count, payoff, fitness, population_share)
     average_score: f64,
 }
 
@@ -49,7 +49,7 @@ impl<'de> Deserialize<'de> for RoundState {
             where
                 V: MapAccess<'de>,
             {
-                let mut state: Option<Vec<(Agent, (u32, f64, f64, f64))>> = None;
+                let mut state: Option<Vec<(Agent, AgentRoundData)>> = None;
                 let mut average_score = None;
 
                 while let Some(key) = map.next_key::<String>()? {
@@ -59,7 +59,7 @@ impl<'de> Deserialize<'de> for RoundState {
                                 return Err(de::Error::duplicate_field("state"));
                             }
                             // Deserialize as a vector of tuples
-                            state = Some(map.next_value::<Vec<(Agent, (u32, f64, f64, f64))>>()?);
+                            state = Some(map.next_value::<Vec<(Agent, AgentRoundData)>>()?);
                         }
                         "average_score" => {
                             if average_score.is_some() {
@@ -76,8 +76,8 @@ impl<'de> Deserialize<'de> for RoundState {
                 let state = state.ok_or_else(|| de::Error::missing_field("state"))?;
                 let average_score = average_score.ok_or_else(|| de::Error::missing_field("average_score"))?;
 
-                // Convert the Vec<(Agent, (u32, f64, f64, f64))> into AHashMap<Agent, (u32, f64, f64, f64)>
-                let state_map = state.into_iter().collect::<AHashMap<Agent, (u32, f64, f64, f64)>>();
+                // Convert the Vec<(Agent, AgentRoundData)> into AHashMap<Agent, AgentRoundData>
+                let state_map = state.into_iter().collect::<AHashMap<Agent, AgentRoundData>>();
 
                 Ok(RoundState { state: state_map, average_score })
             }
@@ -94,10 +94,10 @@ impl Serialize for RoundState {
         S: Serializer,
     {
         let mut map = Map::new();
-        for (agent, (count, payoff, fitness, population_share)) in &self.state {
+        for (agent, data) in &self.state {
             // Ensure Agent has a method `unique_id` that returns a unique string identifier
             let key = agent.to_json(); // This should be a simple string identifier, not JSON
-            let value = serde_json::to_value((payoff, fitness, population_share)).unwrap();
+            let value = serde_json::to_value((data.score, data.fitness, data.population_share)).unwrap();
             map.insert(key, value);
         }
         let mut state = serializer.serialize_map(Some(self.state.len()))?;
@@ -115,7 +115,7 @@ impl RoundState {
         }
     }   
 
-    pub fn from(state: AHashMap<Agent, (u32,f64, f64, f64)>, average_score: f64) -> RoundState {
+    pub fn from(state: AHashMap<Agent, AgentRoundData>, average_score: f64) -> RoundState {
         RoundState {
             state: state,
             average_score: average_score,
@@ -148,6 +148,25 @@ pub struct GamePlay {
     debug: bool,
 }
 
+impl Serialize for GamePlay {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = Map::new();
+        for (agent, (count, payoff)) in &self.agents {
+            // Ensure Agent has a method `unique_id` that returns a unique string identifier
+            let key = agent.to_json(); // This should be a simple string identifier, not JSON
+            let value = serde_json::to_value((count, payoff)).unwrap();
+            map.insert(key, value);
+        }
+        let mut state = serializer.serialize_map(Some(self.agents.len()))?;
+        state.serialize_entry("agents", &map)?;
+        state.serialize_entry("gamestate", &self.gamestate)?;
+        state.end()
+    }
+}
+
 impl GamePlay {
     pub fn new(agents: Vec<Agent>, debug : bool, game : Option<Game>) -> GamePlay {
         let agents = GamePlay::get_unique_genomes(agents);
@@ -171,6 +190,11 @@ impl GamePlay {
         }
     }
 
+    pub fn dump_history_to_file(&self, filename: &str) {
+        let json = serde_json::to_string(&self.gamestate).unwrap();
+        std::fs::write(filename, json).expect("Unable to write file");
+    }
+
     pub fn random_init(n: u32, m: u32, debug : bool) -> GamePlay {
         let mut agents: Vec<Agent> = Vec::new();
         for _ in 0..n {
@@ -184,16 +208,13 @@ impl GamePlay {
     pub fn run(&mut self, rounds: u32) -> Result<(), String> {
         for _ in 0..rounds {
             let time = std::time::Instant::now();
-            let round_state = self.compute_round(self.agents.clone());
+            let (round_state, agents) = self.compute_round(self.agents.clone()); // this computes an entire round of the game.
             self.gamestate.push(round_state.clone());
-            let next_proba_distb = self.update_population_distribution( &round_state);
-
-            //do some sort of sampling of the agents
-            let agents = self.sample_and_apply_mutations(next_proba_distb, self.n);
             
             if agents.keys().len() < 2 {
                 return Err(format!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", self.agents));
             }
+
             self.agents = agents;
             if self.debug {
                 print_memory_usage();
@@ -264,19 +285,23 @@ impl GamePlay {
         agent_map
     }
 
-    fn compute_round(&self, agents : AHashMap<Agent, (u32, f64)>) -> RoundState {
+    fn compute_round(&self, agents : AHashMap<Agent, (u32, f64)>) -> (RoundState, AHashMap<Agent, (u32, f64)>){
         //computes the state of the game after one round and return proba_distb of agents in next round
         if agents.len() < 2 {
             panic!("Population size has converged to 0 or 1 agents, stopping simulation. agent left: {:?}", agents);
         }
 
+        // variables for secure parallel loop
         let state = Arc::new(Mutex::new(AHashMap::new()));
         let action_mutex = Mutex::new([false, false]); // Initialize the mutex outside the parallel iterator
         let average_score = Arc::new(Mutex::new(0.0)); // Initialize average_score with Arc and Mutex
 
         let t0 = std::time::Instant::now();
+
+        //the outer loop is parallelized
         (0..agents.len()).into_par_iter().for_each(|i| {
             let mut payoff1 = 0.0;
+            
             let (agent1, (count1, share1)) = agents.iter().nth(i).unwrap();
             for j in 0..agents.len(){
                 if i == j {
@@ -301,10 +326,12 @@ impl GamePlay {
             }
             let mut state_guard = state.lock().unwrap();
             let mut avg_score = average_score.lock().unwrap(); // Lock average_score for modification
-            *avg_score += payoff1 * *share1; //average score is payoff times share of agent in population
+            *avg_score += payoff1 * (*share1); //average score is payoff times share of agent in population
+
             state_guard.insert(
                 agent1.clone(), (count1.clone(), payoff1, share1.clone(), (*action_mutex.lock().unwrap()).clone())
             );
+
         });
         println!("Time taken to compute round for round: {:?}", t0.elapsed());
 
@@ -322,11 +349,21 @@ impl GamePlay {
 
         // To access `final_state` after filling it, make sure you do it outside of parallel sections.
         let final_state = final_state.into_inner().unwrap(); 
+        let formatted_final_state = final_state.iter().map(|(agent, (count, payoff, fitness, population_share))| {
+            (agent.clone(), AgentRoundData::from(*count, *payoff, *fitness, *population_share))
+        }).collect::<AHashMap<Agent, AgentRoundData>>();
     
-        return RoundState {
-            state: final_state,
+        let round_state =  RoundState {
+            state: formatted_final_state,
             average_score: *average_score.lock().unwrap(),
         };
+
+        let next_proba_distb = self.update_population_distribution( &round_state);
+
+        //do some sort of sampling of the agents
+        let agents = self.sample_and_apply_mutations(next_proba_distb, self.n);
+        return (round_state, agents);
+
 
     }
 
@@ -378,26 +415,26 @@ impl GamePlay {
         let mut counts : Vec<u32> = Vec::new();
         let mut total_next_proba = 0.0;
 
-        for (agent, (count, payoff, fitness, population_share)) in last_roundState.state.iter() {
+        for (agent, data) in last_roundState.state.iter() {
             let x = 1.0 - last_roundState.state.iter().map(
-                    |(agent2, (_, payoff2, _, population_share2))| 
-                    if agent == agent2 {0.0} else {(payoff2*population_share2)/payoff }
+                    |(agent2, data2)| 
+                    if agent == agent2 {0.0} else {(data2.score*data2.population_share)/data.score }
                 ).sum::<f64>();
             
             if self.debug {
                 println!("agent: {:?}", agent);
-                println!("payoff: {:?}", payoff);
-                println!("fitness: {:?}", fitness);
-                println!("population_share: {:?}", population_share);
+                println!("payoff: {:?}", data.score);
+                println!("fitness: {:?}", data.fitness);
+                println!("population_share: {:?}", data.population_share);
             }
 
-            let next_proba = payoff * self.d * population_share * x;
+            let next_proba = data.score * self.d * data.population_share * x;
 
             if (next_proba > (1.0 / self.n as f64)) {
                 //we only add the agent to the next round if the probability is greater than 1/n
                 proba_distb.insert(agent.clone(), next_proba);
                 total_next_proba += next_proba;
-                counts.push(*count);
+                counts.push(data.count);
             } else {
                 println!("excluding with proba: {:?}", next_proba);
             }
