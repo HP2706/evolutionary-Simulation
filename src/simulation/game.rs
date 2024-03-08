@@ -1,21 +1,22 @@
-use serde::{Serialize};
-use serde::ser::{SerializeMap, Serializer};
+use serde::{Deserialize, Serialize};
+use serde::ser::{SerializeMap, Serializer, SerializeStruct, SerializeSeq};
 use serde_json::{self, Map, Value};
-use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
+use serde::de::{self, Deserializer, MapAccess, Visitor};
 use itertools::Itertools;
 use approx::assert_abs_diff_eq;
 use rayon::prelude::*;
 use rand::distributions::{Distribution, WeightedIndex};
 use rand::Rng;
+use std::collections::HashMap;
 
 use crate::simulation::{
     agent::Agent,
     types::{AgentRoundData, RoundState, GameBoard}
 };
 use std::{hash::Hash};
-use ahash::AHashMap;
 use super::types::AgentMetaData; // this is a bit faster than the standard HashMap
 
+#[derive(Clone, Debug, Deserialize)]
 pub struct Game {
     pub rounds : Vec<RoundState>,
     pub game_board : GameBoard,
@@ -26,6 +27,25 @@ pub struct Game {
     pub p_d: f64,
     pub p_r: f64,
 }
+
+impl Serialize for Game {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer {
+        let mut state = serializer.serialize_struct("Game", 8)?;
+        state.serialize_field("rounds", &self.rounds)?;
+        state.serialize_field("game_board", &self.game_board)?;
+        state.serialize_field("is_test", &self.is_test)?;
+        state.serialize_field("debug", &self.debug)?;
+        state.serialize_field("d", &self.d)?;
+        state.serialize_field("p_p", &self.p_p)?;
+        state.serialize_field("p_d", &self.p_d)?;
+        state.serialize_field("p_r", &self.p_r)?;
+        state.end()
+    }
+
+}
+
 
 impl Game {
     pub fn new(
@@ -46,8 +66,14 @@ impl Game {
         })
     }
 
-    pub fn agents_to_hashmap(agents : &Vec<Agent>)-> AHashMap<Agent, AgentMetaData> {
-        let mut agents_map : AHashMap<Agent, AgentMetaData> = AHashMap::new();
+    pub fn dump_round_state_to_json(&self, file_path : String){
+        serde_json::to_writer(
+            std::fs::File::create(file_path).unwrap(), &self.rounds
+        ).unwrap();
+    }
+
+    pub fn agents_to_hashmap(agents : &Vec<Agent>)-> HashMap<Agent, AgentMetaData> {
+        let mut agents_map : HashMap<Agent, AgentMetaData> = HashMap::new();
         
         for agent in agents {
             if agents_map.contains_key(agent) {
@@ -90,8 +116,8 @@ impl Game {
         
     }
 
-    pub fn compute_next_probability(&self, roundData : &RoundState) -> AHashMap<Agent, f64> {
-        let mut outcome_probabilities : AHashMap<Agent, f64> = AHashMap::new();
+    pub fn compute_next_probability(&self, roundData : &RoundState) -> HashMap<Agent, f64> {
+        let mut outcome_probabilities : HashMap<Agent, f64> = HashMap::new();
         let mut total_probability = 0.0;
         
         for (i, (agent, agent_data)) 
@@ -173,7 +199,7 @@ impl Game {
     /// this function first samples new agents based on the fitness from last round data
     pub fn sample_new_agents(
         &mut self, round_data : &RoundState, n_agents : u32
-    ) -> AHashMap<Agent, AgentMetaData>{
+    ) -> HashMap<Agent, AgentMetaData>{
         if round_data.agent_data.len() == 0 {
             panic!("No agents in round data map is empty");
         }
@@ -205,14 +231,14 @@ impl Game {
     fn play_round(
         &mut self, 
         round_number : u32, 
-        agents : AHashMap<Agent, AgentMetaData>,
+        agents : HashMap<Agent, AgentMetaData>,
         total_players : u32
     ) -> RoundState {
         let combinations = self.enumerate_combinations(
             &agents.keys().cloned().collect()   
         );
 
-        let mut inter_mediate_compute : AHashMap<Agent,f64> = AHashMap::new();
+        let mut inter_mediate_compute : HashMap<Agent,f64> = HashMap::new();
         // this loop computes the score for all the agents
        
         for (agent_combinations, actions, scores) in combinations { 
@@ -244,7 +270,7 @@ impl Game {
                 score * agents.get(agent).unwrap().population_share as f64 // mutliply agent score by its share of the population
             ).sum::<f64>() / total_players as f64;
 
-        let agent_data : AHashMap<Agent, AgentRoundData> = inter_mediate_compute.iter().map(
+        let agent_data : HashMap<Agent, AgentRoundData> = inter_mediate_compute.iter().map(
             |(agent, score)| {
             let agent_metadata = agents.get(agent).unwrap();
             let (count, population_share) = (agent_metadata.count, agent_metadata.population_share);

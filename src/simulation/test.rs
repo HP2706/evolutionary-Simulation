@@ -1,5 +1,6 @@
 use crate::simulation::{types::{RoundState, AgentRoundData, GameBoard}, agent::Agent, game::Game};
-use ahash::AHashMap;
+use std::collections::HashMap;
+use std::collections;
 use itertools::Itertools;
 use approx::assert_abs_diff_eq;
 
@@ -76,7 +77,7 @@ pub fn run_test(n_players : u32) {
         ).sum::<f64>()) / n_players as f64; 
     // the average is simply the sum of the alrady weighted scores
     // we "manually" compute the average.
-    let mut known_outcomes : AHashMap<Agent, TestData> = AHashMap::new();
+    let mut known_outcomes : HashMap<Agent, TestData> = HashMap::new();
     weighted_scores.iter().zip(cloned_agents.iter()).for_each(|(score, agent)| {
         known_outcomes.insert(agent.clone(), TestData{score: *score, fitness: *score - average_payoff});
     });

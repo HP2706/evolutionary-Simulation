@@ -29,7 +29,9 @@ fn main() {
       Ok(game) => game,
       Err(e) => panic!("Error creating game: {}", e),
    }; 
-   game.run(100, agents);
+   game.run(2, agents);
    println!("took {:?}", t0.elapsed());
-  
+   game.dump_round_state_to_json("roundstates.json".to_string());
+   let roundstates = simulation::utils::read_json("roundstates.json").unwrap();
+   println!("Read {:?} roundstates from file", roundstates);
 }

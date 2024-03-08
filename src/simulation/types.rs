@@ -1,17 +1,19 @@
 use serde::{Serialize, Deserialize};
-use ahash::AHashMap;
+use serde::ser::{SerializeMap, Serializer, SerializeStruct};
+use serde::de::{self, Deserializer, Visitor, MapAccess};
+use std::fmt;
 use crate::simulation::agent::Agent;
-
-#[derive(Debug, Clone)]
+use std::collections::HashMap;
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GameBoard {
-    payoff_matrix: AHashMap<Vec<bool>, Vec<f64>>,
+    payoff_matrix: HashMap<Vec<bool>, Vec<f64>>,
     pub n_players: u32,
 }
 
 impl GameBoard {
     pub fn new(game_name: String, n_players : u32) -> Result<GameBoard, String> {
         
-        let mut payoff_matrix : AHashMap<Vec<bool>, Vec<f64>> = AHashMap::new();
+        let mut payoff_matrix : HashMap<Vec<bool>, Vec<f64>> = HashMap::new();
         match game_name.as_str() {
             "prisoners_dilemma" => {
                 match n_players  {
@@ -83,7 +85,7 @@ impl AgentRoundData {
 }
 
 ///this holds features like count and population share which are useful to have precomputed for each round
-/// it is used in the hashmap with agents IE AHashMap<Agent, AgentMetaData>
+/// it is used in the hashmap with agents IE HashMap<Agent, AgentMetaData>
 /// # Variables:
 ///    pub count: u32 - the number of agents with the same genome
 ///     pub population_share: f64 - the share of the population with the same genome
@@ -102,21 +104,114 @@ impl AgentMetaData {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct SerializationAgentData {
+    agent_data : Agent,
+    round_data : AgentRoundData
+}
+
+impl SerializationAgentData {
+    fn new(agent_data : Agent, round_data : AgentRoundData) -> SerializationAgentData {
+        SerializationAgentData {
+            agent_data: agent_data,
+            round_data: round_data
+        }
+    }
+}
+
+
 /// This holds the state of the game at a given round
 /// # Variables:
 ///     pub round_number: u32 - the round number
-///     pub agent_data: AHashMap<Agent, AgentRoundData> - the data for each agent in the round
+///     pub agent_data: HashMap<Agent, AgentRoundData> - the data for each agent in the round
 #[derive(Debug, Clone)]
 pub struct RoundState {
     pub round_number : u32,
-    pub agent_data : AHashMap<Agent, AgentRoundData>,
+    pub agent_data : HashMap<Agent, AgentRoundData>,
+}
+
+impl Serialize for RoundState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("RoundState", 2)?;
+        state.serialize_field("round_number", &self.round_number)?;
+        
+        // Serialize agent_data with agent.id as the key
+        let agent_data_map = self.agent_data.iter().
+            map(|(agent, data)| 
+            (&agent.id, SerializationAgentData::new(agent.clone(), data.clone()
+        )));
+        state.serialize_field("agent_data", &agent_data_map.collect::<HashMap<_, _>>())?;
+        
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RoundState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field { RoundNumber, AgentData }
+
+        struct RoundStateVisitor;
+
+        impl<'de> Visitor<'de> for RoundStateVisitor {
+            type Value = RoundState;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct RoundState")
+            }
+
+            fn visit_map<V>(self, mut map: V) -> Result<RoundState, V::Error>
+            where
+                V: MapAccess<'de>,
+            {
+                let mut round_number = None;
+                let mut agent_data = None;
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::RoundNumber => {
+                            if round_number.is_some() {
+                                return Err(de::Error::duplicate_field("round_number"));
+                            }
+                            round_number = Some(map.next_value()?);
+                        },
+                        Field::AgentData => {
+                            if agent_data.is_some() {
+                                return Err(de::Error::duplicate_field("agent_data"));
+                            }
+                            // Deserialize into a temporary structure that mirrors the JSON
+                            let temp_agent_data: HashMap<String, SerializationAgentData> = map.next_value()?;
+                            // Transform into the expected HashMap<Agent, AgentRoundData>
+                            agent_data = Some(temp_agent_data.into_iter().map(|(id, data)| {
+                                // Assuming Agent can be constructed from its ID
+                                let agent: Agent = data.agent_data;
+                                (agent, data.round_data)
+                            }).collect());
+                        },
+                    }
+                }
+                let round_number = round_number.ok_or_else(|| de::Error::missing_field("round_number"))?;
+                let agent_data: HashMap<Agent, AgentRoundData> = agent_data.ok_or_else(|| de::Error::missing_field("agent_data"))?;
+                Ok(RoundState { round_number, agent_data })
+            }
+        }
+
+        const FIELDS: &'static [&'static str] = &["round_number", "agent_data"];
+        deserializer.deserialize_struct("RoundState", FIELDS, RoundStateVisitor)
+    }
 }
 
 impl RoundState {
     pub fn new(round_number: u32) -> RoundState {
         RoundState {
             round_number: round_number,
-            agent_data: AHashMap::new(),
+            agent_data: HashMap::new(),
         }
     }
 }

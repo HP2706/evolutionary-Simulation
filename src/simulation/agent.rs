@@ -1,9 +1,10 @@
 use rand::Rng;
 use serde::{Serialize, Deserialize};
+use serde::ser::{SerializeMap, Serializer, SerializeStruct};
 use rand_distr::{Distribution, Poisson};
 use std::cmp::Ordering;
 
-#[derive(Serialize, Deserialize, Debug, Hash, PartialOrd)]
+#[derive(Debug, Hash, PartialOrd, Deserialize)]
 pub struct Agent {
     // attributes: memory, strategy, fitness
     pub id : String,
@@ -13,6 +14,22 @@ pub struct Agent {
     //where a_0 is the opponent's last action, a_1 is the agent's last action, and so on
     pub genome: Vec<bool>, // the strategy length n = 2^m [b_n-1, b_n-2, ...,b_1, b_0] the genome
 }
+
+impl Serialize for Agent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Agent", 5)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("memory_len", &self.memory_len)?;
+        state.serialize_field("history", &self.history)?;
+        state.serialize_field("history_len", &self.history_len)?;
+        state.serialize_field("genome", &self.genome)?;
+        state.end()
+    }
+}
+
 
 impl Clone for Agent {
     fn clone(&self) -> Agent {
