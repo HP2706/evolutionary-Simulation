@@ -1,19 +1,19 @@
 mod simulation;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::simulation::{agent::Agent, game::Game, test::{run_test, mega_test}};
+use std::time;
 
 fn main() {
 
-   mega_test(3);
-
-   /* let agents = (0..10).
-      into_par_iter().
-      map(|i| Agent::random_init(2)).
-      collect();
+   let t0 = time::Instant::now();
+   
+   let agents: Vec<Agent> = (0..1000)
+      .map(|_| Agent::random_init(2))
+      .collect();
 
    let board = match simulation::types::GameBoard::new(
       "prisoners_dilemma".to_string(),
-      3
+      2
    ) {
       Ok(board) => board,
       Err(e) => panic!("Error creating game board: {}", e),
@@ -21,7 +21,7 @@ fn main() {
 
    let game = Game::new(
       board,
-      agents,
+      false,
       false
    );
 
@@ -29,6 +29,7 @@ fn main() {
       Ok(game) => game,
       Err(e) => panic!("Error creating game: {}", e),
    }; 
-   game.run(1); */
+   game.run(100, agents);
+   println!("took {:?}", t0.elapsed());
   
 }

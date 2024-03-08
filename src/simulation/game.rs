@@ -3,6 +3,10 @@ use serde::ser::{SerializeMap, Serializer};
 use serde_json::{self, Map, Value};
 use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 use itertools::Itertools;
+use approx::assert_abs_diff_eq;
+use rayon::prelude::*;
+use rand::distributions::{Distribution, WeightedIndex};
+use rand::Rng;
 
 use crate::simulation::{
     agent::Agent,
@@ -10,27 +14,35 @@ use crate::simulation::{
 };
 use std::{hash::Hash};
 use ahash::AHashMap;
-
 use super::types::AgentMetaData; // this is a bit faster than the standard HashMap
-
-
 
 pub struct Game {
     pub rounds : Vec<RoundState>,
     pub game_board : GameBoard,
     pub is_test : bool,
+    pub debug : bool, 
+    pub d: f64,
+    pub p_p: f64,
+    pub p_d: f64,
+    pub p_r: f64,
 }
 
 impl Game {
     pub fn new(
         game_board: GameBoard, 
         is_test : bool, 
+        debug : bool,
     ) -> Result<Game, String> {
         
         Ok(Game {
             rounds: Vec::new(),
             game_board: game_board,
-            is_test : is_test
+            is_test : is_test,
+            debug : debug,
+            d: 0.001,
+            p_p: 2e-5,
+            p_d: 1e-5,
+            p_r: 1e-5,
         })
     }
 
@@ -58,21 +70,133 @@ impl Game {
 
     pub fn run(&mut self, n_rounds : u32, agents : Vec<Agent>) {
 
-        let agents_map = Game::agents_to_hashmap(&agents);  
+        let mut agents_map = Game::agents_to_hashmap(&agents);  
         for i in 0..n_rounds {
             let round_state = self.play_round(i, agents_map.clone(), agents.len() as u32);
-            //println!("Roundstate : {:?}", round_state);
-            self.rounds.push(round_state);
-            
-            //do sampling based on RoundState to generate new Vec<Agent> 
-            //of the same size although abstraction should allow decrease/increase in agent size
-            //assign new hashmap to agents_map
-            //repeat
+            self.rounds.push(round_state.clone());
+            agents_map = self.sample_new_agents(&round_state, agents.len() as u32); // Updated without redeclaration
+            if agents_map.keys().len() < 2 {
+                println!("game halted at timestep: {:?} as there is only one agent left", i);
+                break;
+            }
+
         }
     }
 
-    pub fn sample_new_agents(&mut self, roundData : &RoundState){
-        //TODO
+    /// this is a nonlinear function that makes the value positive
+    pub fn make_positive(&self, value : f64) -> f64{
+        //we use exponential function to make the value positive
+        1.0 + (-value).exp()
+        
+    }
+
+    pub fn compute_next_probability(&self, roundData : &RoundState) -> AHashMap<Agent, f64> {
+        let mut outcome_probabilities : AHashMap<Agent, f64> = AHashMap::new();
+        let mut total_probability = 0.0;
+        
+        for (i, (agent, agent_data)) 
+            in roundData.agent_data.iter().enumerate() {
+            
+            let first_factor = self.d * self.make_positive(agent_data.fitness)*agent_data.population_share;
+            
+            let second_factor : f64;
+            if agent_data.score != 0.0 {
+                second_factor = 1.0 - roundData.agent_data
+                    .iter().enumerate().
+                    map(|(j, (agent, inner_agent_data))|
+                        if i != 0 {
+                            (inner_agent_data.score * inner_agent_data.population_share)/ agent_data.score
+                        } else {
+                            0.0
+                        }
+                    ).sum::<f64>();   
+            } else {
+                second_factor = 1.0;
+            }                 
+                
+            let second_factor = self.make_positive(second_factor);
+            //check is not NaN
+            if first_factor.is_nan() {
+                panic!("Nan value detected in probability computation for first factor");
+            }
+            if second_factor.is_nan() {
+                panic!("Nan value detected in probability computation for second factor");
+            }
+            let probability = first_factor * second_factor;
+            total_probability += probability;
+            
+            outcome_probabilities.insert(agent.clone(), probability);
+        }
+
+        
+        // Test if the sum of the probabilities is 1
+        let sum : f64 = outcome_probabilities.iter().map(|(_, &prob)| prob).sum();
+        
+        if sum != 0.0 {
+            for probability in outcome_probabilities.values_mut() {
+                *probability /= sum;
+            }
+        }
+
+        let corrected_sum: f64 = outcome_probabilities.values().sum();
+        if corrected_sum != 1.0 {
+            let correction_factor = 1.0 / corrected_sum;
+            for probability in outcome_probabilities.values_mut() {
+                *probability *= correction_factor;
+            }
+        }
+
+        let sum : f64 = outcome_probabilities.iter().map(|(_, &prob)| prob).sum();
+        
+        assert_abs_diff_eq!(sum, 1.0, epsilon = 0.0001);
+        for (_, prob) in outcome_probabilities.iter() {
+            assert!(*prob >= 0.0); // proba should be positive
+            assert!(*prob <= 1.0); // proba should be less than 1
+        }
+        
+        outcome_probabilities
+    }
+
+    /// mutates the agents in place
+    /// TODO: this could be optimized further by using a parallel iterator
+    /// and by using a dictionary to store the agents
+    pub fn apply_mutations(&self, agents : &mut Vec<Agent>) {
+
+        agents.par_iter_mut().for_each(|agent| {  
+            agent.mutate(self.p_p, self.p_d, self.p_r);
+            // Mutation logic is applied directly to each agent in the vector,
+            // so there's no need to return a new vector.
+            // The mutate method should modify the agent in place.
+        });
+    }
+
+    /// this function first samples new agents based on the fitness from last round data
+    pub fn sample_new_agents(
+        &mut self, round_data : &RoundState, n_agents : u32
+    ) -> AHashMap<Agent, AgentMetaData>{
+        if round_data.agent_data.len() == 0 {
+            panic!("No agents in round data map is empty");
+        }
+        let probability_distribution = self.compute_next_probability(round_data);
+        // Convert the probability distribution into a format suitable for sampling
+        let agents: Vec<Agent> = probability_distribution.keys().cloned().collect();
+        let probabilities: Vec<f64> = probability_distribution.values().cloned().collect();
+        if self.debug {
+            println!("Probabilities: {:?}", probabilities);
+        }
+        let dist = WeightedIndex::new(&probabilities).unwrap();
+    
+        // Sample in parallel
+        let mut new_agents: Vec<Agent> = (0..n_agents).into_par_iter()
+            .map(|_| {
+                let mut rng = rand::thread_rng();
+                agents[dist.sample(&mut rng)].clone()
+            })
+            .collect();
+
+        self.apply_mutations(&mut new_agents); // we modify the agents in place 
+        let output = Self::agents_to_hashmap(&new_agents);
+        return output;
     }
 
     /// this is the core function of the game, 

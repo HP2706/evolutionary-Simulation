@@ -35,6 +35,7 @@ pub fn run_test(n_players : u32) {
 
     let mut game = match Game::new(
         game_board,
+        false,
         true,
     ) {
         Ok(game) => game,
