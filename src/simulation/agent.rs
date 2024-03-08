@@ -1,7 +1,9 @@
 use rand::Rng;
 use serde::{Serialize, Deserialize};
 use rand_distr::{Distribution, Poisson};
-#[derive(Serialize, Deserialize, Debug, Hash)]
+use std::cmp::Ordering;
+
+#[derive(Serialize, Deserialize, Debug, Hash, PartialOrd)]
 pub struct Agent {
     // attributes: memory, strategy, fitness
     pub id : String,
@@ -32,6 +34,13 @@ impl PartialEq for Agent {
 
 impl Eq for Agent {}
 
+impl Ord for Agent {
+    //we otder by id
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
 impl Agent {
     pub fn random_init(memory_len : u32) -> Agent {
         let history = (0..memory_len).map(|_| rand::random::<bool>()).collect();
@@ -43,7 +52,30 @@ impl Agent {
             history_len: memory_len as usize,
             genome: genome,
         }
+    }
 
+    
+
+    fn check_genome(genome : &Vec<bool>, history : &Vec<bool>) -> bool {
+        if genome.len() != 2usize.pow(history.len() as u32) {
+            panic!(
+                "Strategy and memory length mismatch got genome len {} and history len {} 
+                expected genome len of 2^history len {}", 
+                genome.len(), history.len(), 2usize.pow(history.len() as u32)
+            );
+        } 
+        return true;
+    }
+
+    pub fn from(genome : Vec<bool>, history : Vec<bool>, memory_len : u32) -> Agent {
+        Agent::check_genome(&genome, &history);
+        Agent {
+            id : Agent::genome_to_id(genome.clone()),
+            memory_len : memory_len as usize,
+            history: history,
+            history_len: memory_len as usize,
+            genome: genome,
+        }
     }
 
     pub fn genome_to_id(genome : Vec<bool>) -> String {
@@ -82,16 +114,6 @@ impl Agent {
         }
     }
 
-    pub fn map_history_to_action(&self) -> bool {
-        //maps a binary sequence to an integer
-        println!("History: {:?}", self.history);
-        let idx = self.history.iter().fold(0, |acc, &bit| (acc << 1) | (bit as u32));
-        println!("Mapped history to action: {}", idx);
-        println!("Genome: {:?}", self.genome);
-        println!("output: {}", self.genome[idx as usize]);
-        return self.genome[idx as usize];
-    }   
-
     pub fn add_memory(&mut self, old_actions : [bool; 2]) {
         //we add the action pair from the last round to the memory    
         // we pop the oldest action pair and push the new one 
@@ -104,9 +126,10 @@ impl Agent {
         }
     }
 
-    pub fn get_action(&mut self) -> bool {
+    pub fn get_action(&self) -> bool {
         //given current history, return the action
-        let action = self.genome[self.map_history_to_action() as usize];
+        let idx = self.history.iter().fold(0, |acc, &bit| (acc << 1) | (bit as u32));
+        let action = self.genome[idx as usize];
         return action;
     }
 

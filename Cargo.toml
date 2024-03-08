@@ -14,5 +14,7 @@ memory-stats = "1.1.0"
 rand_distr = "0.4.3"
 ahash = { version = "0.8.11", feautures = ["nightly"] }
 atomic = "0.6.0"
+itertools = "0.12.1"
+approx = "0.5.1"
 
 
