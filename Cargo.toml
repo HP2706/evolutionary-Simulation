@@ -16,6 +16,8 @@ ahash = { version = "0.8.11", feautures = ["nightly"] }
 atomic = "0.6.0"
 itertools = "0.12.1"
 approx = "0.5.1"
-polars = "0.38.1"
+polars = { version = "0.38.1", features = ["polars-io"] }
+polars-io ={ version = "0.38.1", features = ["parquet"] }
+ndarray = "0.15.6"
 
 

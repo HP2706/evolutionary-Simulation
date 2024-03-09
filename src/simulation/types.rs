@@ -1,3 +1,4 @@
+use polars::frame::DataFrame;
 use serde::{Serialize, Deserialize, Deserializer};
 use serde::ser::{SerializeMap, Serializer, SerializeStruct};
 use serde::de::{self, Visitor, MapAccess};

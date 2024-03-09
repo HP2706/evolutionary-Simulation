@@ -6,14 +6,16 @@ use itertools::Itertools;
 use approx::assert_abs_diff_eq;
 use rayon::prelude::*;
 use rand::distributions::{Distribution, WeightedIndex};
-use rand::Rng;
-use std::collections::HashMap;
+use std::{collections::HashMap, fs::File};
+use polars::prelude::*;
+use std::{hash::Hash};
+use ndarray::{Array, Array2, Axis};
+
 
 use crate::simulation::{
     agent::Agent,
     types::{AgentRoundData, RoundState, GameBoard}
 };
-use std::{hash::Hash};
 use super::types::AgentMetaData; // this is a bit faster than the standard HashMap
 
 #[derive(Clone, Debug, Deserialize)]
@@ -27,6 +29,7 @@ pub struct Game {
     pub p_d: f64,
     pub p_r: f64,
 }
+
 
 impl Serialize for Game {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -70,6 +73,49 @@ impl Game {
         serde_json::to_writer(
             std::fs::File::create(file_path).unwrap(), &self
         ).unwrap();
+    }
+
+    pub fn load_from_json(file_path : String) -> Game {
+        let contents = std::fs::read_to_string(file_path).expect("Failed to read file");
+        let json: Value = serde_json::from_str(&contents).unwrap();
+        serde_json::from_value(json).unwrap()
+    }
+
+    pub fn dump_to_parquet(&self, df : &mut DataFrame, file_path : String)-> Result<(), Box<dyn std::error::Error>> {
+        ParquetWriter::new(File::create(file_path)?).finish(df)?;
+        Ok(())
+    }
+
+    fn read_from_parquet(file_path : String) -> Result<DataFrame, Box<dyn std::error::Error>> {
+        let reader = ParquetReader::new(File::open(file_path)?);
+        let df = reader.finish()?;
+        Ok(df)
+    }
+
+
+    pub fn round_state_to_dataframe(&self) -> Result<DataFrame, Box<dyn std::error::Error>> {
+        let mut df = DataFrame::default();
+
+        for round_state in self.rounds.clone() {
+            for (agent, data) in round_state.agent_data {
+                // Here you define how you want to flatten the structure
+                let row = Series::new("round_number", &[round_state.round_number]);
+                let agent_id = Series::new("agent_id", &[agent.id]);
+                let count = Series::new("count", &[data.count]);
+                let score = Series::new("score", &[data.score]);
+                let fitness = Series::new("fitness", &[data.fitness]);
+                let population_share = Series::new("population_share", &[data.population_share]);
+
+                // Create a temporary DataFrame for this iteration
+                let temp_df = DataFrame::new(vec![row, agent_id, count, score, fitness, population_share])?;
+
+                // Append the temporary DataFrame to the main DataFrame
+                df.vstack_mut(&temp_df)?;
+            }
+        }
+
+        Ok(df)
+    
     }
 
     pub fn agents_to_hashmap(agents : &Vec<Agent>)-> HashMap<Agent, AgentMetaData> {

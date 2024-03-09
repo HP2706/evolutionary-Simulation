@@ -1,7 +1,8 @@
 mod simulation;
+use polars::frame::DataFrame;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use crate::simulation::{agent::Agent, game::Game, test::{mega_test, run_test}, types::GameBoard};
-use std::time;
+use std::{borrow::BorrowMut, time};
 
 fn main() {
 
@@ -30,8 +31,15 @@ fn main() {
       Err(e) => panic!("Error creating game: {}", e),
    }; 
    game.run(2, agents);
-   println!("took {:?}", t0.elapsed());
-   game.dump_to_json("roundstates.json".to_string());
-   let out_json : Game = simulation::utils::read_json("roundstates.json").unwrap();
-   println!("{:?}", out_json);
+
+   let mut df = match game.round_state_to_dataframe() {
+      Ok(df) => df,
+      Err(e) => panic!("Error creating dataframe: {}", e),
+   };
+
+   match game.dump_to_parquet(&mut df, "test.parquet".to_string()) {
+      Ok(_) => (),
+      Err(e) => panic!("Error dumping to parquet: {}", e),
+   }
+
 }
