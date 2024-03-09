@@ -1,6 +1,6 @@
 mod simulation;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use crate::simulation::{agent::Agent, game::Game, test::{run_test, mega_test}};
+use crate::simulation::{agent::Agent, game::Game, test::{mega_test, run_test}, types::GameBoard};
 use std::time;
 
 fn main() {
@@ -31,7 +31,7 @@ fn main() {
    }; 
    game.run(2, agents);
    println!("took {:?}", t0.elapsed());
-   game.dump_round_state_to_json("roundstates.json".to_string());
-   let roundstates = simulation::utils::read_json("roundstates.json").unwrap();
-   println!("Read {:?} roundstates from file", roundstates);
+   game.dump_to_json("roundstates.json".to_string());
+   let out_json : Game = simulation::utils::read_json("roundstates.json").unwrap();
+   println!("{:?}", out_json);
 }

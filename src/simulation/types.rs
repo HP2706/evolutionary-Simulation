@@ -1,13 +1,83 @@
-use serde::{Serialize, Deserialize};
+use serde::{Serialize, Deserialize, Deserializer};
 use serde::ser::{SerializeMap, Serializer, SerializeStruct};
-use serde::de::{self, Deserializer, Visitor, MapAccess};
+use serde::de::{self, Visitor, MapAccess};
+use serde_json::Value;
 use std::fmt;
 use crate::simulation::agent::Agent;
 use std::collections::HashMap;
-#[derive(Debug, Clone, Deserialize, Serialize)]
+
+use super::game::Game;
+#[derive(Debug, Clone)]
 pub struct GameBoard {
     payoff_matrix: HashMap<Vec<bool>, Vec<f64>>,
     pub n_players: u32,
+}
+
+impl Serialize for GameBoard {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.payoff_matrix.len()))?;
+        for (k, v) in &self.payoff_matrix {
+            let key_as_strings: Vec<String> = k.iter().
+                map(|&b| 
+                    if b == true {
+                        "1".to_string()
+                    } else {
+                        "0".to_string()
+                    }
+                ).collect();
+            let key_as_string = key_as_strings.join("");
+            println!("key as strings: {:?}", key_as_string);
+            map.serialize_entry(&key_as_string, v)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for GameBoard {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Deserialize the JSON into a serde_json::Value
+        let v: Value = Value::deserialize(deserializer)?;
+
+        // Attempt to convert the Value into the expected HashMap format
+        if let Value::Object(map) = v {
+            let mut payoff_matrix: HashMap<Vec<bool>, Vec<f64>> = HashMap::new();
+
+            for (key, value) in map {
+                println!("key: {:?}, value: {:?}", key, value);
+                let key_as_bools: Vec<bool> = key.chars()
+                    .map(|c| match c {
+                        '1' => true,
+                        '0' => false,
+                        _ => panic!("Invalid character in key, expected '1' or '0' got {:?}", c),
+                    })
+                    .collect();
+
+                if let Value::Array(nums) = value {
+                    let nums: Vec<f64> = nums.into_iter().map(|n| 
+                        n.as_f64().expect("Expected a floating point number")
+                    ).collect();
+
+                    payoff_matrix.insert(key_as_bools, nums);
+                } else {
+                    panic!("Expected an array of numbers");
+                }
+            }
+
+            let n_players = payoff_matrix.keys().next().unwrap().len() as u32; // Assuming all keys have the same length
+            Ok(GameBoard {
+                payoff_matrix : payoff_matrix,
+                n_players: n_players, // Assuming all keys have the same length
+            })
+        } else {
+            panic!("Expected a JSON object");
+        }
+    }
 }
 
 impl GameBoard {

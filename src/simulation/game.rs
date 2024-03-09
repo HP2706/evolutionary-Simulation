@@ -66,9 +66,9 @@ impl Game {
         })
     }
 
-    pub fn dump_round_state_to_json(&self, file_path : String){
+    pub fn dump_to_json(&self, file_path : String){
         serde_json::to_writer(
-            std::fs::File::create(file_path).unwrap(), &self.rounds
+            std::fs::File::create(file_path).unwrap(), &self
         ).unwrap();
     }
 
