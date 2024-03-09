@@ -141,14 +141,15 @@ impl Game {
     }
 
     pub fn run(&mut self, n_rounds : u32, agents : Vec<Agent>) {
-
         let mut agents_map = Game::agents_to_hashmap(&agents);  
         for i in 0..n_rounds {
             let round_state = self.play_round(i, agents_map.clone(), agents.len() as u32);
             self.rounds.push(round_state.clone());
             agents_map = self.sample_new_agents(&round_state, agents.len() as u32); // Updated without redeclaration
-            if agents_map.keys().len() < 2 {
-                println!("game halted at timestep: {:?} as there is only one agent left", i);
+            if agents_map.keys().len() < self.game_board.n_players as usize { // we halt game if there are not enough agents
+                println!("game halted at timestep: {:?} as there is only {:?} 
+                agents left and {:?} are needed to play the game", 
+                i, agents_map.keys().len(), self.game_board.n_players);
                 break;
             }
 
@@ -280,9 +281,16 @@ impl Game {
         agents : HashMap<Agent, AgentMetaData>,
         total_players : u32
     ) -> RoundState {
+
+        if agents.keys().len() == 0 {
+            panic!("No agents in agents map is empty this should not happen within play_round");
+        }
+        println!("Agents in play_round: {:?}", agents.keys());
+
         let combinations = self.enumerate_combinations(
             &agents.keys().cloned().collect()   
         );
+
 
         let mut inter_mediate_compute : HashMap<Agent,f64> = HashMap::new();
         // this loop computes the score for all the agents
@@ -308,6 +316,11 @@ impl Game {
                     inter_mediate_compute.insert(cloned_agent, score);
                 }    
             }    
+            println!("intermediate compute: {:?}", inter_mediate_compute);
+        }
+
+        if inter_mediate_compute.len() == 0 {
+            panic!("No agents in inter_mediate_compute map is empty this should not happen within play_round");
         }
 
         let average_score = inter_mediate_compute.iter().
@@ -325,6 +338,10 @@ impl Game {
             (cloned_agent, AgentRoundData::from(count, *score, fitness, population_share))
         }).collect();
 
+        if agent_data.len() == 0 {
+            panic!("No agents in agent data map is empty this should not happen within play_round");
+        }
+        //TODO fix that agent_data might be an empty HashMap
         return RoundState {
             round_number: round_number,
             agent_data: agent_data,

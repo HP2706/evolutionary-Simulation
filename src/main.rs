@@ -14,7 +14,7 @@ fn main() {
 
    let board = match simulation::types::GameBoard::new(
       "prisoners_dilemma".to_string(),
-      2
+      3
    ) {
       Ok(board) => board,
       Err(e) => panic!("Error creating game board: {}", e),
@@ -30,7 +30,7 @@ fn main() {
       Ok(game) => game,
       Err(e) => panic!("Error creating game: {}", e),
    }; 
-   game.run(2, agents);
+   game.run(1000, agents);
 
    let mut df = match game.round_state_to_dataframe() {
       Ok(df) => df,
